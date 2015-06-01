@@ -40,7 +40,7 @@ TARGETS = hashiru
 all: $(TARGETS)
 
 hashiru: hashiru.cc hashiru_cuda.o
-	$(CC) $< -o $@ Cuda1DFDWave_cuda.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
+	$(CC) $< -o $@ hashiru_cuda.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 hashiru_cuda.o: hashiru_cuda.cu
 	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
