@@ -3,32 +3,49 @@
 #include <cuda_runtime.h>
 #include "hashiru_cuda.cuh"
 
+__device__ void cuda_hash(const char *in, const int len, char *out)
+{
+   char c = 0;
+   for(int i = 0; i < len; i++)
+   {
+       c += (char)in[i];
+   }
+   c = 97 + c % 26;
+   out[0] = c;
+   for(int i = 1; i < 32; i++)
+   {
+       out[i] = 'F';
+   }
+   out[32] = '\0';
+}
+
 __global__ void cudaCrackHashKernel(const char *dict, const int max_length, const int dict_size, const char *to_crack, int *correct_idx)
 {
     unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    char *current, *cur_hash, *c1, *c2;
-    int equal;
+    char *current, *cur_hash = (char *)malloc(33 * sizeof(char));
+    int equal, len;
+    char *c;
     while(idx < dict_size)
     {
-        current = (char *) (dict + idx * max_length);
-        //TODO: cur_hash = salsa20_gpu(current);
-        //TODO: if(strcmp(cur_hash, to_crack) == 0)
-        c1 = cur_hash;
-        c2 = (char *)to_crack;
-        equal = 0;
-        while(*c1 != '\0' && *c2 != '\0')
+        current = (char *) (dict + idx * (max_length + 1));
+        len = 0;
+        c = current;
+        while(*c != '\0')
         {
-            if(*c1 != *c2)
-            {
-                equal = 1;
-                break;
-            }
-            c1++;
-            c2++;
+            len++;
+            c++;
         }
-        equal = ((*c1 != '\0') || (*c2 != '\0'));
-        if(equal == 0)
-        {
+        memset(cur_hash, 0, 33);
+        cuda_hash(current, len, cur_hash);
+        // Super sketchy strcmp implementation.  Not parallel
+        // and not efficient, but hopefully it should work.
+        equal = 1;
+        for(int i = 0; i < 32; i++)
+        { 
+            if(to_crack[i] != cur_hash[i]) equal = 0;
+        }
+        if(equal)
+        { 
             *correct_idx = idx;
             break;
         }
@@ -44,5 +61,5 @@ void cudaCallCrackHashKernel(const unsigned int blocks,
          const char *to_crack,
          int *correct_idx)
 {
-    // TODO:  cudaCrackHashKernel<<<blocks, threadsPerBlock>>>(dict, max_length, dict_size, to_crack, correct_idx);
+    cudaCrackHashKernel<<<blocks, threadsPerBlock>>>(dict, max_length, dict_size, to_crack, correct_idx);
 }

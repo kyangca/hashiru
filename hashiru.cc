@@ -3,6 +3,7 @@
 #include <vector>
 #include <ctime>
 #include <stdlib.h>
+#include <string.h>
 
 #include <cuda_runtime.h>
 #include "hashiru_cuda.cuh"
@@ -22,6 +23,23 @@ inline void gpuAssert(cudaError_t code,
 
 using namespace std;
 
+string cpu_hash(string in)
+{
+    string result;
+    char c = 0;
+    for(int i = 0; i < in.length(); i++)
+    {
+        c += in[i];
+    }
+    c = 97 + c % 26;
+    result.push_back(c);
+    for(int i = 0; i < 31; i++)
+    {
+        result.push_back('F');
+    }
+    return result;
+}
+
 int main(int argc, char **argv)
 {
     /*** Communal Setup ***/
@@ -32,6 +50,12 @@ int main(int argc, char **argv)
     }
     char *dict_path = argv[1];
     char *to_crack = argv[2];
+
+    if(strlen(to_crack) != 32)
+    {
+        cerr << "fatal: target hashes must be 32 characters" << endl;
+        return EXIT_FAILURE;
+    }
 
     ifstream dict_file;
     vector<string> dict;
@@ -44,7 +68,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    int max_length = -1;
+    int max_length = 0;
     while(!dict_file.eof())
     {
         dict_file >> temp;
@@ -64,8 +88,13 @@ int main(int argc, char **argv)
     for(vector<string>::iterator it = dict.begin(); it != dict.end(); ++it)
     {
         cur = *it;
-        //TODO: cur_hash = salsa20(cur);
-        if(cur_hash.compare(to_crack) == 0)
+        cur_hash = cpu_hash(cur);
+        int match = 1;
+        for(int i = 0; i < 32; i++)
+        {
+            if(cur_hash[i] != to_crack[i]) match = 0;
+        }
+        if(match)
         {
             duration = (clock() - start_cpu) / (double) CLOCKS_PER_SEC;
             cout << "PASSWORD FOUND" << endl;
@@ -109,24 +138,24 @@ int main(int argc, char **argv)
     // Allocate memory on the GPU
     char *dev_dict;
     int *dev_correct_idx;
-    gpuErrChk(cudaMalloc((void **) &dev_dict, dict.size() * max_length * sizeof(char)));
-    gpuErrChk(cudaMemset(dev_dict, 0, dict.size() * max_length * sizeof(char)));
+    char *dev_target;
+    gpuErrChk(cudaMalloc((void **) &dev_dict, dict.size() * (max_length + 1) * sizeof(char)));
+    gpuErrChk(cudaMemset(dev_dict, 0, dict.size() * (max_length + 1) * sizeof(char)));
     gpuErrChk(cudaMalloc((void **) &dev_correct_idx, sizeof(int)));
     gpuErrChk(cudaMemset(dev_correct_idx, -1, sizeof(int)));
+    gpuErrChk(cudaMalloc((void **) &dev_target, 32 * sizeof(char)));
+    gpuErrChk(cudaMemcpy(dev_target, to_crack, 32 * sizeof(char), cudaMemcpyHostToDevice));
     // Copy over all the strings in the dict to the GPU memory
     // Yes, we are wasting memory by padding out all strings to
     // the max length, but C strings are unpleasant and this is a
     // fast and dirty fix.
-    int idx;
-    for(vector<string>::iterator it = dict.begin(); it != dict.end(); ++it)
+    for(int i = 0; i < dict.size(); i++)
     {
-        idx = it - dict.begin();
-        temp = *it;
-        gpuErrChk(cudaMemcpy(dev_dict + max_length * idx, temp.c_str(), temp.length() * sizeof(char), cudaMemcpyHostToDevice));
+        temp = dict.at(i);
+        gpuErrChk(cudaMemcpy(dev_dict + ((max_length + 1) * i), temp.c_str(), temp.length() * sizeof(char), cudaMemcpyHostToDevice));
     }
-
     START_TIMER();
-    cudaCallCrackHashKernel(num_blocks, threads_per_block, dev_dict, max_length, dict.size(), to_crack, dev_correct_idx);
+    cudaCallCrackHashKernel(num_blocks, threads_per_block, dev_dict, max_length, dict.size(), dev_target, dev_correct_idx);
     STOP_RECORD_TIMER(time_taken);
     gpuErrChk(cudaMemcpy(&correct_idx, dev_correct_idx, sizeof(int), cudaMemcpyDeviceToHost));
     if(correct_idx == -1)
@@ -146,5 +175,6 @@ int main(int argc, char **argv)
     dict_file.close();
     cudaFree(dev_dict);
     cudaFree(dev_correct_idx);
+    cudaFree(dev_target);
     return 0;
 }
