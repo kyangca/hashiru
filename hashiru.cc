@@ -23,6 +23,13 @@ inline void gpuAssert(cudaError_t code,
 
 using namespace std;
 
+/*
+ * A simple toy hash function I wrote because the
+ * actual hash function was not going to be finished
+ * in time.  It sums up all the chars in a string,
+ * mods 26, adds to 'a' to get a lowercase alphabetic
+ * char, and then pads 31 'F' characters.
+ */
 string cpu_hash(string in)
 {
     string result;
@@ -43,6 +50,7 @@ string cpu_hash(string in)
 int main(int argc, char **argv)
 {
     /*** Communal Setup ***/
+    // Check the arguments
     if(argc != 5)
     {
         cerr << "usage: hashiru path_to_dict hash_to_crack threads_per_block num_blocks" << endl;
@@ -51,6 +59,7 @@ int main(int argc, char **argv)
     char *dict_path = argv[1];
     char *to_crack = argv[2];
 
+    // Reject hashes of inappropriate length
     if(strlen(to_crack) != 32)
     {
         cerr << "fatal: target hashes must be 32 characters" << endl;
@@ -61,9 +70,11 @@ int main(int argc, char **argv)
     vector<string> dict;
     string temp;
 
+    // Open the given dictionary file
     dict_file.open(dict_path);
     if(!dict_file)
     {
+        // If the file doesn't exist, complain and quit.
         cerr << "fatal: can't open dictionary file" << endl;
         return EXIT_FAILURE;
     }
@@ -71,8 +82,11 @@ int main(int argc, char **argv)
     int max_length = 0;
     while(!dict_file.eof())
     {
+        // For every line in the file, treat it as a new string
+        // in the dictionary.
         dict_file >> temp;
         dict.push_back(temp);
+        // Keep track of the maximum length candidate.
         if(temp.length() > max_length)
         {
             max_length = temp.length();
@@ -84,16 +98,22 @@ int main(int argc, char **argv)
     double duration;
     string cur, cur_hash;
     int found = 0;
+    // Start timer
     start_cpu = clock();
     for(vector<string>::iterator it = dict.begin(); it != dict.end(); ++it)
     {
+        // Get current string and compute its hash.
         cur = *it;
         cur_hash = cpu_hash(cur);
         int match = 1;
+        // Janky CPU strcmp ensuring we cover all 32 characters
+        // (In case a \0 shows up as a result of the hash, which
+        // it shouldn't, but it's too late to change this).
         for(int i = 0; i < 32; i++)
         {
             if(cur_hash[i] != to_crack[i]) match = 0;
         }
+        // If it's a match, print the analysis.
         if(match)
         {
             duration = (clock() - start_cpu) / (double) CLOCKS_PER_SEC;
@@ -104,6 +124,7 @@ int main(int argc, char **argv)
             break;
         }
     }
+    // If nothing matches, complain that the attack failed.
     if(!found)
     {
         duration = (clock() - start_cpu) / (double) CLOCKS_PER_SEC;
@@ -136,13 +157,20 @@ int main(int argc, char **argv)
 
 
     // Allocate memory on the GPU
+    // Specifically, we need the dictionary, the correct index, and the target
+    // hash.
     char *dev_dict;
     int *dev_correct_idx;
     char *dev_target;
+    // Assume every string in the dictionary is the maximum length, add 1 byte
+    // for the null terminator.  Yes, this is a waste of memory, but it's
+    // a quick and sloppy fix.
     gpuErrChk(cudaMalloc((void **) &dev_dict, dict.size() * (max_length + 1) * sizeof(char)));
     gpuErrChk(cudaMemset(dev_dict, 0, dict.size() * (max_length + 1) * sizeof(char)));
+    // The correct index is just a single integer.
     gpuErrChk(cudaMalloc((void **) &dev_correct_idx, sizeof(int)));
     gpuErrChk(cudaMemset(dev_correct_idx, -1, sizeof(int)));
+    // The target hash has to be 32 characters.
     gpuErrChk(cudaMalloc((void **) &dev_target, 32 * sizeof(char)));
     gpuErrChk(cudaMemcpy(dev_target, to_crack, 32 * sizeof(char), cudaMemcpyHostToDevice));
     // Copy over all the strings in the dict to the GPU memory
@@ -154,15 +182,21 @@ int main(int argc, char **argv)
         temp = dict.at(i);
         gpuErrChk(cudaMemcpy(dev_dict + ((max_length + 1) * i), temp.c_str(), temp.length() * sizeof(char), cudaMemcpyHostToDevice));
     }
+
+    // Start the timer, call the kernel, stop the timer.
     START_TIMER();
     cudaCallCrackHashKernel(num_blocks, threads_per_block, dev_dict, max_length, dict.size(), dev_target, dev_correct_idx);
     STOP_RECORD_TIMER(time_taken);
+
+    // Copy over the correct index.
     gpuErrChk(cudaMemcpy(&correct_idx, dev_correct_idx, sizeof(int), cudaMemcpyDeviceToHost));
+    // If it's still -1, the attack failed.  Complain.
     if(correct_idx == -1)
     {
         cout << "Did not find password matching hash in dictionary" << endl;
         cout << "GPU time taken: " << time_taken / 1000.0 << " seconds" << endl;
     }
+    // Otherwise, print the correct answer.
     else
     {
         cout << "PASSWORD FOUND" << endl;
